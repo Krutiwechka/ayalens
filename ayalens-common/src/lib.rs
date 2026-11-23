@@ -40,8 +40,8 @@ pub struct UdpHdr{
 pub struct TcpHdr{
     pub src_port: u16,
     pub dst_port: u16,
-    pub seq_num: u64,
-    pub ack_num: u64,
+    pub seq_num: u32,
+    pub ack_num: u32,
     pub hdr_len: u8,
     pub flags: u8,
     pub wind_size: u16,

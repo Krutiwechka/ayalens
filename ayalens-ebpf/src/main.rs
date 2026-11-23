@@ -25,7 +25,6 @@ fn try_parse(ctx: &XdpContext) -> u32{
     let dst_port: u16;
     match eth_type {
         eth_type::IPV4 => {
-            info!(ctx, "[ETH] ipv4 packet");
             match parse_ipv4(ctx, offset) {
                 Ok((src, dst, pr, tl, off)) => {
                     dst_addr = dst;
@@ -86,7 +85,10 @@ fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, u16, usi
         return Err(xdp_action::XDP_PASS);
     }
     let ip_hdr = ip_start as *const Ipv4Hdr;
-    
+    let ver = unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).ver_and_ihl))} >> 4; 
+    if ver != 4 {
+        return Err(xdp_action::XDP_PASS);
+    }
     let ihl = (unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).ver_and_ihl))} & 0b00001111) * 4;
     let raw_offset = offset + ihl as usize;
     if raw_offset > data_end{
@@ -95,11 +97,10 @@ fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, u16, usi
     if ihl < 5 {
         return  Err(xdp_action::XDP_PASS);
     }
-    let ver = unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).ver_and_ihl))} >> 4; 
-    if ver != 4 {
+    let fg_off = u16::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).fg_info))}) & 0b0001_1111_1111_1111;
+    if fg_off != 0 {
         return Err(xdp_action::XDP_PASS);
     }
-    
     let protocol = unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).protocol))};
     let src_addr = u32::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).src_addr))});
     let dst_addr = u32::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).dst_addr))});
@@ -142,6 +143,7 @@ fn parse_transport(ctx: &XdpContext, protocol: u8, offset: usize) -> Result<(u16
     }
     Ok((src_port, dst_port, raw_offset))
 }
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
