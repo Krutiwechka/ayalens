@@ -1,7 +1,15 @@
-use std::{collections::HashMap, net::Ipv4Addr, sync::{Arc, Mutex}, time::Duration};
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::Context as _;
-use aya::{maps::PerCpuHashMap, programs::{Xdp, XdpMode}};
+use aya::{
+    maps::PerCpuHashMap,
+    programs::{Xdp, XdpMode},
+};
 use ayalens_common::{FlowInfo, FlowTuple};
 use clap::Parser;
 #[rustfmt::skip]
@@ -13,7 +21,6 @@ struct Opt {
     #[clap(short, long, default_value = "eth0")]
     iface: String,
 }
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,17 +43,20 @@ async fn main() -> anyhow::Result<()> {
         env!("OUT_DIR"),
         "/ayalens"
     )))?;
-    
+
     let Opt { iface } = opt;
     let program: &mut Xdp = ebpf.program_mut("ayalens").unwrap().try_into()?;
     program.load()?;
     program.attach(&iface, XdpMode::default())
-        .context("failed to attach the XDP program with default mode - try changing XdpMode::default() to XdpMode::Skb")?; 
-    let result: Arc<Mutex<HashMap<FlowTuple, FlowInfo>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        .context("failed to attach the XDP program with default mode - try changing XdpMode::default() to XdpMode::Skb")?;
+    let result: Arc<Mutex<HashMap<FlowTuple, FlowInfo>>> = Arc::new(Mutex::new(HashMap::new()));
     let result_shared = Arc::clone(&result);
     tokio::task::spawn(async move {
-        let mut flows:  PerCpuHashMap<_, FlowTuple, FlowInfo> = ebpf.map_mut("LENS").expect("Map is created in eBPF side").try_into().expect("LENS must be a PerCpuHashMap");
+        let mut flows: PerCpuHashMap<_, FlowTuple, FlowInfo> = ebpf
+            .map_mut("LENS")
+            .expect("Map is created in eBPF side")
+            .try_into()
+            .expect("LENS must be a PerCpuHashMap");
         loop {
             for cf in flows.iter() {
                 let (flow, per_cpu) = cf.expect("Iterator from map");
@@ -56,8 +66,13 @@ async fn main() -> anyhow::Result<()> {
                     bytes += f.bytes;
                 }
                 let mut res = result_shared.lock().expect("Shared map");
-                res.entry(flow).and_modify(|flow_info| { flow_info.bytes += bytes; flow_info.pkts += pkts;}).or_insert(FlowInfo {bytes, pkts});
-            } 
+                res.entry(flow)
+                    .and_modify(|flow_info| {
+                        flow_info.bytes += bytes;
+                        flow_info.pkts += pkts;
+                    })
+                    .or_insert(FlowInfo { bytes, pkts });
+            }
             let flow_tuples: Vec<FlowTuple> = flows.keys().filter_map(|f| f.ok()).collect();
             for f in flow_tuples {
                 let _ = flows.remove(&f);
@@ -71,11 +86,20 @@ async fn main() -> anyhow::Result<()> {
     ctrl_c.await?;
     println!("Exiting...");
     let res = result.lock().expect("Shared map");
-    let mut stats :Vec<_> = res.iter().collect();
-    stats.sort_by(|flow1, flow2| {flow2.1.bytes.cmp(&flow1.1.bytes)}); 
-    for(flow_tuple, flow_info) in stats{
-        println!("[{}]: {}:{} -> {}:{}\t{} packets, {} bytes", flow_tuple.protocol, Ipv4Addr::from(flow_tuple.src_addr), flow_tuple.src_port, Ipv4Addr::from(flow_tuple.dst_addr), flow_tuple.dst_port, flow_info.pkts, flow_info.bytes);
-    } 
+    let mut stats: Vec<_> = res.iter().collect();
+    stats.sort_by(|flow1, flow2| flow2.1.bytes.cmp(&flow1.1.bytes));
+    for (flow_tuple, flow_info) in stats {
+        println!(
+            "[{}]: {}:{} -> {}:{}\t{} packets, {} bytes",
+            flow_tuple.protocol,
+            Ipv4Addr::from(flow_tuple.src_addr),
+            flow_tuple.src_port,
+            Ipv4Addr::from(flow_tuple.dst_addr),
+            flow_tuple.dst_port,
+            flow_info.pkts,
+            flow_info.bytes
+        );
+    }
 
     Ok(())
 }
