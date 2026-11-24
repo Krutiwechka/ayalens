@@ -10,7 +10,7 @@ ayalens-common = { path = "../ayalens-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
-aya-log = { workspace = true }
+aya-log = { workspace = false}
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -20,6 +20,7 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "net",
     "signal",
+	"time",
 ] }
 clap = { workspace = true, features = ["derive"] }
 [build-dependencies]
@@ -38,7 +39,6 @@ cargo_metadata = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-ayalens-ebpf = { path = "../ayalens-ebpf" }
 
 [[bin]]
 name = "ayalens"

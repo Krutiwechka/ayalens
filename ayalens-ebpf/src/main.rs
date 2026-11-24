@@ -3,15 +3,15 @@
 
 
 use core::ptr;
+use aya_ebpf::{bindings::xdp_action::{self, XDP_PASS}, btf_maps::LruPerCpuHashMap, macros::{btf_map, xdp}, programs::XdpContext};
+use ayalens_common::{EthHdr, EthHdrVlan, FlowInfo, FlowTuple, Ipv4Hdr, TcpHdr, UdpHdr, eth_type, protocol};
+#[btf_map(name = "LENS")]
+static LENS: LruPerCpuHashMap<FlowTuple, FlowInfo, 16384> = LruPerCpuHashMap::new();
 
-use aya_ebpf::{bindings::xdp_action::{self, XDP_PASS}, macros::xdp, programs::XdpContext};
-use aya_log_ebpf::info;
-use ayalens_common::{EthHdr, EthHdrVlan, Ipv4Hdr, UdpHdr, TcpHdr, eth_type};
 #[xdp]
 pub fn ayalens(ctx: XdpContext) -> u32 {
      try_parse(&ctx) 
 }
-
 fn try_parse(ctx: &XdpContext) -> u32{
     let (eth_type, mut offset) = match parse_eth(ctx){
         Ok(eth_type) => eth_type,
@@ -35,11 +35,8 @@ fn try_parse(ctx: &XdpContext) -> u32{
                 }
                 Err(err) => return err
             } 
-                
-            
         } 
         _ => {
-            info!(ctx, "[ETH] unknown packet");
             return XDP_PASS;
         }
     };
@@ -51,29 +48,41 @@ fn try_parse(ctx: &XdpContext) -> u32{
         }
         Err(err) => return err
     }
-    info!(ctx,"[{}] {:i}:{} -> {:i}:{}\n",protocol, src_addr, src_port, dst_addr, dst_port);
-    
+    //info!(ctx,"[{}] {:i}:{} -> {:i}:{}\n",protocol, src_addr, src_port, dst_addr, dst_port);
+    let flow_tuple = FlowTuple{src_addr, dst_addr, src_port, dst_port, protocol, _pad: [0;3]}; 
+    //let lens = unsafe { &mut *(&raw mut LENS) };
+    match LENS.get_ptr_mut(&flow_tuple){
+        Some(ptr) => {
+            let f = unsafe {&mut *ptr};
+            f.pkts += 1;
+            f.bytes += total_len as u64;
+        }
+        None => {
+            let _ = LENS.insert(&flow_tuple, &FlowInfo {pkts: 1, bytes: total_len as u64 }, 0);
+        }
+    }
     xdp_action::XDP_PASS
+
 }
 
 fn parse_eth(ctx: &XdpContext) -> Result<(u16, usize), u32>{
     let data = ctx.data();
     let data_end = ctx.data_end();
-    let offset = size_of::<EthHdr>();
+    let mut offset = size_of::<EthHdr>();
     let eth_end = data + offset;
     if eth_end > data_end {
         return Err(xdp_action::XDP_PASS);
     }
     let eth_hdr = data as *const EthHdr;
-    let eth_type = unsafe {ptr::read_unaligned(ptr::addr_of!((*eth_hdr).eth_type))};
+    let mut eth_type = unsafe {ptr::read_unaligned(ptr::addr_of!((*eth_hdr).eth_type))};
     if eth_type == eth_type::VLAN {
-        let offset = size_of::<EthHdrVlan>();
+        offset = size_of::<EthHdrVlan>();
         let eth_end_vlan = data + offset;
         if eth_end_vlan > data_end {
         return Err(xdp_action::XDP_PASS);
         }
         let eth_hdr_vlan = data as *const EthHdrVlan;
-        let eth_type = unsafe {ptr::read_unaligned(ptr::addr_of!((*eth_hdr_vlan).eth_type))};
+        eth_type = unsafe {ptr::read_unaligned(ptr::addr_of!((*eth_hdr_vlan).eth_type))};
     } 
     return Ok((eth_type, offset));
 }
@@ -115,7 +124,7 @@ fn parse_transport(ctx: &XdpContext, protocol: u8, offset: usize) -> Result<(u16
     let dst_port: u16;
     let raw_offset: usize;
     match protocol {
-        17 => {
+        protocol::UDP => {
             let hdr_start = data + offset;
             if hdr_start + size_of::<UdpHdr>() > data_end{
                 return Err(xdp_action::XDP_PASS)
@@ -125,7 +134,7 @@ fn parse_transport(ctx: &XdpContext, protocol: u8, offset: usize) -> Result<(u16
             src_port = u16::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*hdr).src_port))});
             dst_port = u16::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*hdr).dst_port))});
         }
-        6 => {
+        protocol::TCP => {
             let hdr_start = data + offset;
             if hdr_start + size_of::<TcpHdr>() > data_end{
                 return Err(xdp_action::XDP_PASS)
