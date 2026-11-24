@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Waiting for Ctrl-C...");
     ctrl_c.await?;
     println!("Exiting...");
-    let mut res = result.lock().expect("Shared map");
+    let res = result.lock().expect("Shared map");
     let mut stats :Vec<_> = res.iter().collect();
     stats.sort_by(|flow1, flow2| {flow2.1.bytes.cmp(&flow1.1.bytes)}); 
     for(flow_tuple, flow_info) in stats{

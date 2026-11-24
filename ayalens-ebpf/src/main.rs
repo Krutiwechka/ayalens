@@ -20,17 +20,15 @@ fn try_parse(ctx: &XdpContext) -> u32{
     let dst_addr: u32;
     let src_addr: u32;
     let protocol: u8;
-    let total_len: u16;
     let src_port: u16;
     let dst_port: u16;
     match eth_type {
         eth_type::IPV4 => {
             match parse_ipv4(ctx, offset) {
-                Ok((src, dst, pr, tl, off)) => {
+                Ok((src, dst, pr, off)) => {
                     dst_addr = dst;
                     src_addr = src;
                     protocol = pr;
-                    total_len = tl;
                     offset = off;
                 }
                 Err(err) => return err
@@ -48,17 +46,15 @@ fn try_parse(ctx: &XdpContext) -> u32{
         }
         Err(err) => return err
     }
-    //info!(ctx,"[{}] {:i}:{} -> {:i}:{}\n",protocol, src_addr, src_port, dst_addr, dst_port);
     let flow_tuple = FlowTuple{src_addr, dst_addr, src_port, dst_port, protocol, _pad: [0;3]}; 
-    //let lens = unsafe { &mut *(&raw mut LENS) };
-    match LENS.get_ptr_mut(&flow_tuple){
+    match LENS.get_ptr_mut(flow_tuple){
         Some(ptr) => {
             let f = unsafe {&mut *ptr};
             f.pkts += 1;
-            f.bytes += total_len as u64;
+            f.bytes += (ctx.data_end() - ctx.data()) as u64;
         }
         None => {
-            let _ = LENS.insert(&flow_tuple, &FlowInfo {pkts: 1, bytes: total_len as u64 }, 0);
+            let _ = LENS.insert(flow_tuple, FlowInfo {pkts: 1, bytes: (ctx.data_end() - ctx.data()) as u64 }, 0);
         }
     }
     xdp_action::XDP_PASS
@@ -84,9 +80,9 @@ fn parse_eth(ctx: &XdpContext) -> Result<(u16, usize), u32>{
         let eth_hdr_vlan = data as *const EthHdrVlan;
         eth_type = unsafe {ptr::read_unaligned(ptr::addr_of!((*eth_hdr_vlan).eth_type))};
     } 
-    return Ok((eth_type, offset));
+    Ok((eth_type, offset))
 }
-fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, u16, usize), u32>{
+fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, usize), u32>{
     let data = ctx.data();
     let data_end = ctx.data_end();
     let ip_start = data + offset;
@@ -100,10 +96,10 @@ fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, u16, usi
     }
     let ihl = (unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).ver_and_ihl))} & 0b00001111) * 4;
     let raw_offset = offset + ihl as usize;
-    if raw_offset > data_end{
+    if raw_offset + data > data_end{
         return Err(xdp_action::XDP_PASS);
     }
-    if ihl < 5 {
+    if ihl < 20 {
         return  Err(xdp_action::XDP_PASS);
     }
     let fg_off = u16::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).fg_info))}) & 0b0001_1111_1111_1111;
@@ -113,8 +109,7 @@ fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, u16, usi
     let protocol = unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).protocol))};
     let src_addr = u32::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).src_addr))});
     let dst_addr = u32::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).dst_addr))});
-    let total_len = u16::from_be(unsafe {ptr::read_unaligned(ptr::addr_of!((*ip_hdr).total_len))});
-    Ok((src_addr, dst_addr, protocol, total_len, raw_offset))
+    Ok((src_addr, dst_addr, protocol, raw_offset))
 }
 
 fn parse_transport(ctx: &XdpContext, protocol: u8, offset: usize) -> Result<(u16, u16, usize), u32>{

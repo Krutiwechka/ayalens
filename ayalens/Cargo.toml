@@ -10,7 +10,6 @@ ayalens-common = { path = "../ayalens-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
-aya-log = { workspace = false}
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
