@@ -2,10 +2,7 @@
 #![no_main]
 
 use aya_ebpf::{
-    bindings::xdp_action::{self, XDP_PASS},
-    btf_maps::LruPerCpuHashMap,
-    macros::{btf_map, xdp},
-    programs::XdpContext,
+    bindings::xdp_action::{self, XDP_PASS}, btf_maps::{LruPerCpuHashMap, PerCpuArray}, macros::{btf_map, xdp}, programs::XdpContext,
 };
 use ayalens_common::{
     EthHdr, EthHdrVlan, FlowInfo, FlowTuple, Ipv4Hdr, TcpHdr, UdpHdr, eth_type, protocol,
@@ -14,14 +11,25 @@ use core::ptr;
 #[btf_map(name = "LENS")]
 static LENS: LruPerCpuHashMap<FlowTuple, FlowInfo, 16384> = LruPerCpuHashMap::new();
 
+#[btf_map(name = "UNDETECTED")]
+static UNDETECTED: PerCpuArray<u64, 4> = PerCpuArray::new();
+
+const UNK: u32 = 0;
+const FRAG: u32 = 2;
+
+const IP_UNKNOWN_PACKET: u32 = 111;
 #[xdp]
 pub fn ayalens(ctx: XdpContext) -> u32 {
     try_parse(&ctx)
 }
 fn try_parse(ctx: &XdpContext) -> u32 {
+    let bytes = (ctx.data_end() - ctx.data()) as u64;
     let (eth_type, mut offset) = match parse_eth(ctx) {
         Ok(eth_type) => eth_type,
-        Err(err) => return err,
+        Err(err) => {
+            broken(UNK, bytes);
+            return err;
+        }
     };
     let dst_addr: u32;
     let src_addr: u32;
@@ -36,9 +44,17 @@ fn try_parse(ctx: &XdpContext) -> u32 {
                 protocol = pr;
                 offset = off;
             }
-            Err(err) => return err,
+            Err(err) => {
+                if err == IP_UNKNOWN_PACKET{
+                    broken(FRAG, bytes);
+                    return XDP_PASS
+                }
+                broken(UNK, bytes);
+                return err
+            }
         },
         _ => {
+            broken(UNK, bytes);
             return XDP_PASS;
         }
     };
@@ -48,7 +64,10 @@ fn try_parse(ctx: &XdpContext) -> u32 {
             dst_port = dst;
             offset = off;
         }
-        Err(err) => return err,
+        Err(err) => {
+            broken(UNK, bytes);
+            return err
+        }
     }
     let flow_tuple = FlowTuple {
         src_addr,
@@ -123,7 +142,7 @@ fn parse_ipv4(ctx: &XdpContext, offset: usize) -> Result<(u32, u32, u8, usize), 
     let fg_off = u16::from_be(unsafe { ptr::read_unaligned(ptr::addr_of!((*ip_hdr).fg_info)) })
         & 0b0001_1111_1111_1111;
     if fg_off != 0 {
-        return Err(xdp_action::XDP_PASS);
+        return Err(IP_UNKNOWN_PACKET);
     }
     let protocol = unsafe { ptr::read_unaligned(ptr::addr_of!((*ip_hdr).protocol)) };
     let src_addr = u32::from_be(unsafe { ptr::read_unaligned(ptr::addr_of!((*ip_hdr).src_addr)) });
@@ -159,6 +178,9 @@ fn parse_transport(
             }
             let hdr = hdr_start as *const TcpHdr;
             let len = (unsafe { ptr::read_unaligned(ptr::addr_of!((*hdr).hdr_len)) } >> 4) * 4;
+            if len < 20 {
+                return Err(xdp_action::XDP_PASS);
+            }
             raw_offset = offset + len as usize;
             if data + raw_offset > data_end {
                 return Err(xdp_action::XDP_PASS);
@@ -171,6 +193,14 @@ fn parse_transport(
     Ok((src_port, dst_port, raw_offset))
 }
 
+fn broken(ind: u32, bytes: u64) {
+    if let Some(ptr) = UNDETECTED.get_ptr_mut(ind){
+        unsafe {*ptr += 1};
+    }
+    if let Some(ptr) = UNDETECTED.get_ptr_mut(ind + 1){
+        unsafe {*ptr += bytes};
+    }
+}
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
